@@ -77,16 +77,16 @@ print(paste("Do CRS's match?", crs(depth_crop_resamp) == crs(avg_sst)))
 
 # SST Reclassification Matrix
 
-sst_rcl <- matrix(c(-Inf, sst_min, 0, # values -Inf to min = 0
-                    sst_min, sst_max, 1,  # values min to max = 1
-                    sst_max, Inf, 0), # values max to Inf = 0
+sst_rcl <- matrix(c(-Inf, 11, 0, # values -Inf to min = 0
+                    11, 30, 1,  # values min to max = 1
+                    30, Inf, 0), # values max to Inf = 0
                     ncol = 3, byrow = TRUE)
 
 # Depth Reclassification Matrix
 
-depth_rcl <- matrix(c(-Inf, depth_min, 0, # values -Inf to min = 0
-                    depth_min, depth_max, 1,  # values min to max = 1
-                    depth_max, Inf, 0), # values max to Inf = 0
+depth_rcl <- matrix(c(-Inf, -70, 0, # values -Inf to min = 0
+                    -70, 0, 1,  # values min to max = 1
+                    0, Inf, 0), # values max to Inf = 0
                     ncol = 3, byrow = TRUE)
 ```
 
@@ -97,12 +97,26 @@ optimal_depth <- terra::classify(depth_crop_resamp, rcl = depth_rcl)
 ```
 
 ```{r}
-# Stack SST and depth rasters
+# Find locations where both SST AND depth AND EEZ = 1
 optimal_cond <- optimal_sst * optimal_depth
 ```
 
 ```{r}
-# Find locations where both SST ANd depth = 1
-find_1s <- function(layer1, layer2){(layer1 * layer2)} # Will produce 1's where sst AND depth = 1, otherwise 0.
-optimal_zones <- lapp(optimal_cond, fun = find_1s)
+# # Find locations where both SST AND depth AND EEZ = 1
+# find_1s <- function(temp, dep){(temp*dep)} # Will produce 1's where sst AND depth = 1 AND EEZ = 1, otherwise 0.
+# optimal_zones <- lapp(optimal_cond, fun = find_1s)
+```
+
+```{r}
+# Rasterize EEZ and mask by EEZ
+eez_raster <- rasterize(eez, avg_sst, field = 'rgn_key')
+optimal_zones <- mask(optimal_cond, eez_raster)
+```
+
+```{r}
+total_area <- cellSize(optimal_zones, mask = TRUE, unit = 'km')
+area_by_eez <- (zonal(optimal_zones, eez_raster, fun = 'sum', na.rm = TRUE)) |> 
+    as_tibble() |> 
+    as.data.frame()
+area_by_eez
 ```
