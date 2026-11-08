@@ -1,0 +1,108 @@
+# Aquaculture Opportunity Zones off the US West Coast
+## Using Sea Surface Temperature (SST), bathymetry, and Exclusive Economic Zone (EEZ) data
+
+```{r}
+# Load libraries
+library(here)
+library(sf)          # vector handling
+library(terra)       # raster handling
+library(tidyverse)
+library(tmap)        # map making
+library(viridisLite)
+```
+
+```{r}
+# Import EEZ data and depth.tif
+eez <- st_read(here("data", "wc_regions_clean.shp"))
+
+depth <- rast(here("data", "depth.tif"))
+```
+
+```{r}
+# Import SST and create raster stack
+
+# Set directory for folder
+sst_dir <- here::here("data", "sst")
+
+# Create a list of all images that have the extension .tif and contain the word band
+sst_rasters <- list.files(sst_dir,
+                             pattern = glob2rx("*sst*.tif$"),
+                             full.names = TRUE)
+
+# Create a raster stack
+sst_stack <- rast(sst_rasters) |> 
+    terra::project("EPSG:4326") # Fix each raster's CRS
+    # This was giving me trouble when I tried to stack sst and depth, so fixed here
+
+```
+
+```{r}
+# Check CRS's !
+if((st_crs(crs(depth)) == st_crs(crs(sst_stack))) & (st_crs(crs(depth)) == st_crs(crs(eez))) & (st_crs(crs(eez)) == st_crs(crs(sst_stack)))){
+    print("CRS's match!")
+  }else{
+    print("CRS's DO NOT match!")
+    st_crs(crs(eez))$epsg
+    st_crs(crs(depth))$epsg
+    st_crs(crs(sst_stack))$epsg
+}
+```
+
+```{r}
+# Find average SST and convert from Kelvin to Celsius
+avg_sst <- mean(sst_stack, na.rm = TRUE) - 273.15
+```
+
+
+```{r}
+# Crop and resample depth raster to match SST raster
+depth_crop_resamp <- depth |> 
+    crop(avg_sst) |> 
+    resample(avg_sst, method = "bilinear")
+```
+
+```{r}
+# Check that the depth and SST match in resolution, extent, and CRS's by stacking!
+print(paste("Do CRS's match?", crs(depth_crop_resamp) == crs(avg_sst)))
+# avg_sst_depth <- rast(c(avg_sst, depth_crop_resamp))
+```
+
+## Oyster Reclassification
+```{r}
+## OYSTERS ##
+# sea surface temperature: 11-30°C
+# depth: 0-70 meters below sea level
+
+# aq_opportunity_zones <- function(sst_min, sst_max, depth_min, depth_max, species){}
+
+# SST Reclassification Matrix
+
+sst_rcl <- matrix(c(-Inf, sst_min, 0, # values -Inf to min = 0
+                    sst_min, sst_max, 1,  # values min to max = 1
+                    sst_max, Inf, 0), # values max to Inf = 0
+                    ncol = 3, byrow = TRUE)
+
+# Depth Reclassification Matrix
+
+depth_rcl <- matrix(c(-Inf, depth_min, 0, # values -Inf to min = 0
+                    depth_min, depth_max, 1,  # values min to max = 1
+                    depth_max, Inf, 0), # values max to Inf = 0
+                    ncol = 3, byrow = TRUE)
+```
+
+```{r}
+# Apply reclasification matrices
+optimal_sst <- terra::classify(avg_sst, rcl = sst_rcl)
+optimal_depth <- terra::classify(depth_crop_resamp, rcl = depth_rcl)
+```
+
+```{r}
+# Stack SST and depth rasters
+optimal_cond <- optimal_sst * optimal_depth
+```
+
+```{r}
+# Find locations where both SST ANd depth = 1
+find_1s <- function(layer1, layer2){(layer1 * layer2)} # Will produce 1's where sst AND depth = 1, otherwise 0.
+optimal_zones <- lapp(optimal_cond, fun = find_1s)
+```
