@@ -1,7 +1,15 @@
-# Aquaculture Opportunity Zones off the US West Coast
-## Using Sea Surface Temperature (SST), bathymetry, and Exclusive Economic Zone (EEZ) data
+---
+title: "git "
+subtitle: "Using Sea Surface Temperature (SST), Bathymetric, and Exclusive Economic Zone (EEZ) data"
+author: "Kelly Morgan"
+date: "Nov 8, 2026"
+format: 'pdf'
+---
 
 ```{r}
+#| warning: false
+#| message: false
+
 # Load libraries
 library(here)
 library(sf)          # vector handling
@@ -9,6 +17,7 @@ library(terra)       # raster handling
 library(tidyverse)
 library(tmap)        # map making
 library(viridisLite)
+library(kableExtra)
 ```
 
 ```{r}
@@ -53,7 +62,6 @@ if((st_crs(crs(depth)) == st_crs(crs(sst_stack))) & (st_crs(crs(depth)) == st_cr
 avg_sst <- mean(sst_stack, na.rm = TRUE) - 273.15
 ```
 
-
 ```{r}
 # Crop and resample depth raster to match SST raster
 depth_crop_resamp <- depth |> 
@@ -67,56 +75,97 @@ print(paste("Do CRS's match?", crs(depth_crop_resamp) == crs(avg_sst)))
 # avg_sst_depth <- rast(c(avg_sst, depth_crop_resamp))
 ```
 
-## Oyster Reclassification
-```{r}
-## OYSTERS ##
-# sea surface temperature: 11-30°C
-# depth: 0-70 meters below sea level
-
-# aq_opportunity_zones <- function(sst_min, sst_max, depth_min, depth_max, species){}
-
-# SST Reclassification Matrix
-
-sst_rcl <- matrix(c(-Inf, 11, 0, # values -Inf to min = 0
-                    11, 30, 1,  # values min to max = 1
-                    30, Inf, 0), # values max to Inf = 0
-                    ncol = 3, byrow = TRUE)
-
-# Depth Reclassification Matrix
-
-depth_rcl <- matrix(c(-Inf, -70, 0, # values -Inf to min = 0
-                    -70, 0, 1,  # values min to max = 1
-                    0, Inf, 0), # values max to Inf = 0
-                    ncol = 3, byrow = TRUE)
-```
+## Oyster Reclassification, Masking, and Mapping Function
 
 ```{r}
-# Apply reclasification matrices
-optimal_sst <- terra::classify(avg_sst, rcl = sst_rcl)
-optimal_depth <- terra::classify(depth_crop_resamp, rcl = depth_rcl)
+aq_opportunity_zones <- function(species, sst_min, sst_max, depth_min, depth_max){
+
+    # SST Reclassification Matrix
+
+    sst_rcl <- matrix(c(-Inf, sst_min, 0, # values -Inf to min = 0
+                        sst_min, sst_max, 1,  # values min to max = 1
+                        sst_max, Inf, 0), # values max to Inf = 0
+                        ncol = 3, byrow = TRUE)
+
+    # Depth Reclassification Matrix
+
+    depth_rcl <- matrix(c(-Inf, depth_min, 0, # values -Inf to min = 0
+                        depth_min, depth_max, 1,  # values min to max = 1
+                        depth_max, Inf, 0), # values max to Inf = 0
+                        ncol = 3, byrow = TRUE)
+
+    # Apply reclasification matrices
+    optimal_sst <- terra::classify(avg_sst, rcl = sst_rcl)
+    optimal_depth <- terra::classify(depth_crop_resamp, rcl = depth_rcl)
+
+    # Find locations where both SST AND depth AND EEZ = 1
+    optimal_cond <- optimal_sst * optimal_depth
+
+    # Rasterize EEZ
+    eez_raster <- rasterize(eez, optimal_cond, field = 'rgn_key')
+
+    # Mask optimal conditions by EEZ
+    optimal_zones <- mask(optimal_cond, eez_raster)
+                         
+    area_by_eez <- (zonal(optimal_zones, eez_raster, fun = 'sum', na.rm = TRUE)) |> 
+        as_tibble() |> 
+        as.data.frame() |> 
+        rename(sum = mean)
+
+    # Join area dataset to eez dataset to use geometries, apply st_as_sf() to plot
+    opportunity_zones <- inner_join(area_by_eez, eez, by = 'rgn_key') |> 
+        st_as_sf() |> 
+        select(rgn, area_km2)
+
+    # Display oppotunity_zones in easy-to-read table
+    kable_table <- kable(
+        opportunity_zones, 
+        format = 'simple', 
+        col.names = c("Region", "Area (km^2)", "Geometry"),
+        caption = paste("Oppotunity Area by Region for", species, "Aquaculture") 
+        )
+
+    ## Plot !
+    opportunity_map <- tm_basemap("Esri.OceanBasemap") +
+        tm_shape(opportunity_zones) +
+        tm_options(component.autoscale = FALSE) +
+        # Map exclusive economic zones by suitable area                     
+        tm_polygons(fill = 'area_km2', lwd = 0.7, fill_alpha = 0.6,
+                fill.scale = tm_scale_categorical(values = 'brewer.yl_or_rd'),
+                fill.legend = tm_legend(title = "Optimal Area (km^2)",
+                                        position = tm_pos_out('left'))) +
+        tm_compass(position = c('left', 'bottom'), # Add compass
+                    size = 2) +
+        tm_scalebar(position = c('left', 'bottom')) + # Add scalebar
+        tm_title(text = paste("Opportunity Zones for", species, "Aquaculture along the US West Coast"),
+                size = 1,
+                position = tm_pos_out('center', 'top')) +
+        tm_labels(text = 'rgn', size = 0.5, fontface = 'bold', position = 'center')
+
+    print(kable_table)
+    opportunity_map
+}
 ```
 
-```{r}
-# Find locations where both SST AND depth AND EEZ = 1
-optimal_cond <- optimal_sst * optimal_depth
-```
+## Choosing Species!
+
+**Generic Oyster Species** 
+    - SST Range: 20-30 C 
+    - Depth Range: 0-70 meters
+
+**Species of Interest:** *Ostrea conchaphila,* aka the native Olympia oyster! 
+    - SST Range: 6-20 C ([Source](https://www.interpretivecenter.org/news/the-olympia-oyster)) 
+    - Depth Range: usually 0-50 meters ([SeaLifeBase](https://www.sealifebase.ca/summary/Ostrea-conchaphila.html))
+
+### Generic Oyster Results
 
 ```{r}
-# # Find locations where both SST AND depth AND EEZ = 1
-# find_1s <- function(temp, dep){(temp*dep)} # Will produce 1's where sst AND depth = 1 AND EEZ = 1, otherwise 0.
-# optimal_zones <- lapp(optimal_cond, fun = find_1s)
+aq_opportunity_zones(species = "Generic Oyster", sst_min = 20, sst_max = 30, depth_min = -70, depth_max = 0)
 ```
 
-```{r}
-# Rasterize EEZ and mask by EEZ
-eez_raster <- rasterize(eez, avg_sst, field = 'rgn_key')
-optimal_zones <- mask(optimal_cond, eez_raster)
-```
+### Olympia Oyster Results
 
 ```{r}
-total_area <- cellSize(optimal_zones, mask = TRUE, unit = 'km')
-area_by_eez <- (zonal(optimal_zones, eez_raster, fun = 'sum', na.rm = TRUE)) |> 
-    as_tibble() |> 
-    as.data.frame()
-area_by_eez
+aq_opportunity_zones(species = "Olympia Oyster", sst_min = 6, sst_max = 20, depth_min = -50, depth_max = 0)
 ```
+
